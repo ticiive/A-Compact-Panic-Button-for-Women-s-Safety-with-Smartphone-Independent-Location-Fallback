@@ -6,8 +6,9 @@
 #include "driver/gpio.h"
 
 // ---------------- Configuração ----------------
-#define USE_DEEP_SLEEP 0        // 1 = dorme entre acionamentos; 0 = fica acordada e conectada
-const uint32_t T_MS = 15000;    // tempo limite de espera pelo ACK do celular (T = 15 s)
+#define USE_DEEP_SLEEP 1       // 1 = dorme entre acionamentos; 0 = fica acordada e conectada
+#define MEASURE_MODE   1       // 1 = T de 60 s para medir reconexão sem cair no fallback; 0 = T de 15 s (produção)
+const uint32_t T_MS = MEASURE_MODE ? 60000 : 15000;  // 15 s é o T do método; 60 s só para medir a reconexão
 
 // Pinos
 const int PIN_BUTTON = 33;      // botão; a outra perna (diagonal) vai no GND
@@ -16,33 +17,42 @@ const int LED_PHONE  = 13;      // LED azul: caminho do celular (ACK recebido)
 const int LED_GNSS   = 27;      // LED vermelho: GPS do chaveiro (simulado)
 const int LED_GSM    = 26;      // LED vermelho: SMS do chaveiro (simulado)
 
-// UUIDs (padrão Nordic UART)
+// UUIDs do serviço Nordic UART (reutilizados com semântica própria ALERT/ACK)
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define ACK_UUID     "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  // celular -> ESP32 (write)
 #define ALERT_UUID   "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  // ESP32 -> celular (notify)
 
-RTC_DATA_ATTR int trial = 0;    // contador que sobrevive ao deep sleep
+RTC_DATA_ATTR int trial = 0;    // contador de tentativas; sobrevive ao deep sleep via RTC RAM
 
+// Globais BLE: precisam ser acessíveis fora de setupBLE()
 BLECharacteristic* alertChar = nullptr;
+BLEServer* server = nullptr;
 volatile bool connected = false;
 volatile bool ackReceived = false;
+volatile uint32_t tConnect = 0;  // instante da primeira conexão desde o wake-up (millis())
 String ackPayload = "";
 
+// ---- Callbacks do servidor BLE ----
 class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* s) override { connected = true; }
+  void onConnect(BLEServer* s) override {
+    connected = true;
+    if (tConnect == 0) tConnect = millis();  // registra apenas a primeira conexão do ciclo
+  }
   void onDisconnect(BLEServer* s) override {
     connected = false;
-    BLEDevice::startAdvertising();
+    BLEDevice::startAdvertising();  // retoma o anúncio para permitir reconexão
   }
 };
 
+// Callback da característica ACK: celular escreve "lat;lon;acc" para confirmar o envio
 class AckCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
-    ackPayload = String(c->getValue().c_str());   // esperado: "lat;lon;acc"
+    ackPayload = String(c->getValue().c_str());
     ackReceived = true;
   }
 };
 
+// ---- Utilitários ----
 void beep(int ms) {
   digitalWrite(PIN_BUZZER, HIGH);
   delay(ms);
@@ -55,9 +65,12 @@ void ledsOff() {
   digitalWrite(LED_GSM, LOW);
 }
 
+// ---- Inicialização BLE ----
+// Cria servidor GATT com serviço Nordic UART, característica ALERT (notify)
+// e característica ACK (write). O ponteiro global server é usado em goToSleep().
 void setupBLE() {
   BLEDevice::init("PanicButton");
-  BLEServer* server = BLEDevice::createServer();
+  server = BLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   BLEService* service = server->createService(SERVICE_UUID);
 
@@ -75,14 +88,20 @@ void setupBLE() {
   BLEDevice::startAdvertising();
 }
 
+// ---- Ciclo de alerta ----
+// Reenvia notificação ALERT a cada 500 ms até receber ACK ou esgotar T_MS.
+// Se ACK chegar: acende LED azul, imprime RESULT e MEAS (instrumentação).
+// Se não chegar: aciona fallback (LED do GPS, depois LED do GSM).
 void runAlertCycle(uint32_t t0) {
   trial++;
   ackReceived = false;
   ackPayload = "";
+  tConnect = 0;
   ledsOff();
   beep(150);
 
   uint32_t lastNotify = 0;
+  // Reenvia a cada 500 ms: o celular pode não ter subscrito na primeira notificação
   while (millis() - t0 < T_MS && !ackReceived) {
     if (connected && millis() - lastNotify >= 500) {
       alertChar->setValue("ALERT");
@@ -97,6 +116,9 @@ void runAlertCycle(uint32_t t0) {
     unsigned long dt = millis() - t0;
     digitalWrite(LED_PHONE, HIGH);
     Serial.printf("RESULT,%d,%s,celular,%lu,%s\n", trial, mode, dt, ackPayload.c_str());
+    // Instrumentação: tempos contados a partir do wake-up (t0 = millis() no início do setup)
+    Serial.printf("MEAS,%d,%lu,%lu\n", trial,
+                  tConnect ? (unsigned long)(tConnect - t0) : 0UL, dt);
   } else {
     digitalWrite(LED_GNSS, HIGH);
     delay(1000);
@@ -109,13 +131,24 @@ void runAlertCycle(uint32_t t0) {
   ledsOff();
 }
 
+// ---- Deep sleep ----
+// Aguarda o botão ser solto, encerra a conexão BLE explicitamente (para que o
+// celular detecte a queda em ~3-4 s em vez de dezenas de segundos), configura
+// wake-up por ext0 no GPIO33, congela os LEDs e dorme.
 void goToSleep() {
   while (digitalRead(PIN_BUTTON) == LOW) delay(10);
   delay(50);
+  // Desconexão explícita: sem ela, a queda era detectada pelo celular com atraso variável
+  if (server && connected) {
+    server->disconnect(server->getConnId());
+    delay(200);
+  }
+  // Pull-up RTC obrigatório: o pull-up comum é desligado durante o sono
   rtc_gpio_pullup_en(GPIO_NUM_33);
   rtc_gpio_pulldown_dis(GPIO_NUM_33);
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 0);
   ledsOff();
+  // gpio_hold congela o estado dos pinos para evitar LEDs semiacesos durante o sono
   gpio_hold_en((gpio_num_t)LED_PHONE);
   gpio_hold_en((gpio_num_t)LED_GNSS);
   gpio_hold_en((gpio_num_t)LED_GSM);
@@ -127,7 +160,9 @@ void setup() {
   uint32_t t0 = millis();
   Serial.begin(115200);
 
+  // Libera o pino do botão (pode ter ficado no modo RTC do boot anterior)
   rtc_gpio_deinit(GPIO_NUM_33);
+  // Libera o hold dos LEDs imposto antes do sleep
   gpio_hold_dis((gpio_num_t)LED_PHONE);
   gpio_hold_dis((gpio_num_t)LED_GNSS);
   gpio_hold_dis((gpio_num_t)LED_GSM);

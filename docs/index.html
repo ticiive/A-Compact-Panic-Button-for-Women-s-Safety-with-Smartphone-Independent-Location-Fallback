@@ -70,6 +70,12 @@ $('testTg').onclick = async () => {
 };
 
 let device, ackChar, busy = false, n = 0;
+let reconnecting = false;
+let disconnectListenerAdded = false;
+
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+}
 
 async function handleAlert() {
   if (busy) return;
@@ -94,21 +100,30 @@ async function connectGatt() {
   ackChar = await svc.getCharacteristic(ACK);
   const alertChar = await svc.getCharacteristic(ALERT);
   await alertChar.startNotifications();
-  alertChar.addEventListener('characteristicvaluechanged', handleAlert);
+  alertChar.oncharacteristicvaluechanged = handleAlert;
   log('Conectado ao botão');
 }
 
 async function reconnect() {
-  for (;;) {
-    try { await connectGatt(); return; }
-    catch (e) { await new Promise(r => setTimeout(r, 1000)); }
+  if (reconnecting) return;
+  reconnecting = true;
+  while (!device.gatt.connected) {
+    try { await withTimeout(connectGatt(), 4000); }
+    catch (e) {
+      try { device.gatt.disconnect(); } catch (_) {}
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
+  reconnecting = false;
 }
 
 $('connect').onclick = async () => {
   try {
     device = await navigator.bluetooth.requestDevice({ filters: [{ name: 'PanicButton' }], optionalServices: [SERVICE] });
-    device.addEventListener('gattserverdisconnected', () => { log('Desconectado, tentando reconectar...'); reconnect(); });
+    if (!disconnectListenerAdded) {
+      device.addEventListener('gattserverdisconnected', () => { log('Desconectado, tentando reconectar...'); reconnect(); });
+      disconnectListenerAdded = true;
+    }
     await connectGatt();
   } catch (e) { log('Erro no Bluetooth: ' + e.message); }
 };

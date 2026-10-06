@@ -1,0 +1,23 @@
+tentativa,reconexao_ms,ack_ms,caminho,incluida_na_estatistica,observacao
+1,7313,9269,celular,nao,conexao feita manualmente pelo seletor de dispositivos do navegador
+2,701,5262,celular,sim,navegador obteve posicao nova (2631 ms) em vez de reutilizar a recente
+3,593,2518,celular,sim,
+4,765,2720,celular,sim,
+5,579,2532,celular,sim,
+6,625,2550,celular,sim,
+7,609,2117,celular,sim,
+8,586,2542,celular,sim,
+9,631,2649,celular,sim,
+10,798,2722,celular,sim,
+11,970,2984,celular,sim,
+12,615,2661,celular,sim,
+13,615,2602,celular,sim,
+14,583,2055,celular,sim,
+15,574,2074,celular,sim,
+16,595,2039,celular,sim,
+17,663,2617,celular,sim,
+18,,,fallback,nao,a pagina travou ao reconectar e foi recarregada
+19,2962,4374,celular,nao,conexao manual pelo seletor apos recarregar a pagina
+20,1113,3152,celular,sim,
+21,628,2607,celular,sim,
+22,603,2560,celular,sim,
