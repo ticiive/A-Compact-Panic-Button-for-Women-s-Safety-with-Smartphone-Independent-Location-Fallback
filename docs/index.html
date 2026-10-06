@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botão de Emergência</title>
+<style>
+  body{font-family:sans-serif;max-width:480px;margin:auto;padding:16px}
+  input,button{width:100%;padding:10px;margin:4px 0;font-size:16px;box-sizing:border-box}
+  #log{white-space:pre-wrap;background:#111;color:#0f0;padding:8px;font-size:13px;min-height:120px}
+</style>
+</head>
+<body>
+<h2>Botão de Emergência</h2>
+<label>Token do bot</label><input id="token" type="password">
+<label>chat_id do contato</label><input id="chat">
+<button id="save">Salvar</button>
+<button id="testLoc">1. Testar localização</button>
+<button id="testTg">2. Testar Telegram</button>
+<button id="connect">3. Conectar ao botão</button>
+<pre id="log"></pre>
+<script>
+const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const ACK     = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const ALERT   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const $ = id => document.getElementById(id);
+const log = m => { $('log').textContent = new Date().toLocaleTimeString() + ' ' + m + '\n' + $('log').textContent; };
+
+try { $('token').value = localStorage.getItem('tg_token') || ''; $('chat').value = localStorage.getItem('tg_chat') || ''; } catch (e) {}
+$('save').onclick = () => {
+  try { localStorage.setItem('tg_token', $('token').value.trim()); localStorage.setItem('tg_chat', $('chat').value.trim()); } catch (e) {}
+  log('Configuração salva');
+};
+
+function getPos() {
+  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej,
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }));
+}
+
+async function sendTelegram(text) {
+  const url = `https://api.telegram.org/bot${$('token').value.trim()}/sendMessage` +
+              `?chat_id=${encodeURIComponent($('chat').value.trim())}&text=${encodeURIComponent(text)}`;
+  const r = await fetch(url);
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.description || 'erro no Telegram');
+}
+
+$('testLoc').onclick = async () => {
+  try {
+    const t = performance.now(); const p = await getPos();
+    log(`Localização OK em ${Math.round(performance.now() - t)} ms: ${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)} m)`);
+  } catch (e) { log('Erro na localização: ' + e.message); }
+};
+$('testTg').onclick = async () => {
+  try { await sendTelegram('Teste do botão de emergência'); log('Telegram OK'); }
+  catch (e) { log('Erro no Telegram: ' + e.message); }
+};
+
+let device, ackChar, busy = false, n = 0;
+
+async function handleAlert() {
+  if (busy) return;
+  busy = true; n++;
+  const t0 = performance.now();
+  try {
+    const p = await getPos(); const t1 = performance.now();
+    const lat = p.coords.latitude.toFixed(6), lon = p.coords.longitude.toFixed(6), acc = Math.round(p.coords.accuracy);
+    await sendTelegram(`ALERTA DE EMERGÊNCIA\nLocalização: https://maps.google.com/?q=${lat},${lon}\nPrecisão: ±${acc} m`);
+    const t2 = performance.now();
+    await ackChar.writeValue(new TextEncoder().encode(`${lat};${lon};${acc}`));
+    log(`Alerta ${n}: localização ${Math.round(t1 - t0)} ms, Telegram ${Math.round(t2 - t1)} ms, precisão ±${acc} m`);
+  } catch (e) {
+    log(`Alerta ${n} falhou: ${e.message} (sem ACK, o botão vai para o fallback)`);
+  }
+  setTimeout(() => busy = false, 3000);
+}
+
+async function connectGatt() {
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SERVICE);
+  ackChar = await svc.getCharacteristic(ACK);
+  const alertChar = await svc.getCharacteristic(ALERT);
+  await alertChar.startNotifications();
+  alertChar.addEventListener('characteristicvaluechanged', handleAlert);
+  log('Conectado ao botão');
+}
+
+async function reconnect() {
+  for (;;) {
+    try { await connectGatt(); return; }
+    catch (e) { await new Promise(r => setTimeout(r, 1000)); }
+  }
+}
+
+$('connect').onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ name: 'PanicButton' }], optionalServices: [SERVICE] });
+    device.addEventListener('gattserverdisconnected', () => { log('Desconectado, tentando reconectar...'); reconnect(); });
+    await connectGatt();
+  } catch (e) { log('Erro no Bluetooth: ' + e.message); }
+};
+</script>
+</body>
+</html>
