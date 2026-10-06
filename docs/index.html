@@ -12,25 +12,38 @@
 </head>
 <body>
 <h2>Botão de Emergência</h2>
-<label>Token do bot</label><input id="token" type="password">
-<label>chat_id do contato</label><input id="chat">
+<p id="instructions">1) Abra o bot no Telegram e toque em Iniciar. 2) Descubra seu chat_id com o @userinfobot. 3) Cole o número abaixo e toque em Salvar.</p>
+<label>Seu chat_id do Telegram (quem recebe o alerta)</label><input id="chat">
 <button id="save">Salvar</button>
 <button id="testLoc">1. Testar localização</button>
 <button id="testTg">2. Testar Telegram</button>
 <button id="connect">3. Conectar ao botão</button>
 <pre id="log"></pre>
 <script>
+const BOT_TOKEN = '8751705649:AAEhT9MbkxHdmDsw-hy6fEW2LLIPA8EiOFI';
 const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const ACK     = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const ALERT   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 const $ = id => document.getElementById(id);
 const log = m => { $('log').textContent = new Date().toLocaleTimeString() + ' ' + m + '\n' + $('log').textContent; };
 
-try { $('token').value = localStorage.getItem('tg_token') || ''; $('chat').value = localStorage.getItem('tg_chat') || ''; } catch (e) {}
+try { $('chat').value = localStorage.getItem('tg_chat') || ''; } catch (e) {}
 $('save').onclick = () => {
-  try { localStorage.setItem('tg_token', $('token').value.trim()); localStorage.setItem('tg_chat', $('chat').value.trim()); } catch (e) {}
+  try { localStorage.setItem('tg_chat', $('chat').value.trim()); } catch (e) {}
   log('Configuração salva');
 };
+
+(async () => {
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`);
+    const j = await r.json();
+    if (j.ok) {
+      const username = j.result.username;
+      $('instructions').innerHTML =
+        `1) Abra o bot no Telegram (<a href="https://t.me/${username}" target="_blank">@${username}</a>) e toque em Iniciar. 2) Descubra seu chat_id com o @userinfobot. 3) Cole o número abaixo e toque em Salvar.`;
+    }
+  } catch (e) {}
+})();
 
 function getPos() {
   return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej,
@@ -38,7 +51,7 @@ function getPos() {
 }
 
 async function sendTelegram(text) {
-  const url = `https://api.telegram.org/bot${$('token').value.trim()}/sendMessage` +
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage` +
               `?chat_id=${encodeURIComponent($('chat').value.trim())}&text=${encodeURIComponent(text)}`;
   const r = await fetch(url);
   const j = await r.json();
