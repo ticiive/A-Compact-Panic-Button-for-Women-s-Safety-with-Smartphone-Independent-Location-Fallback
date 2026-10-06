@@ -1,6 +1,6 @@
 # Botão de Pânico Compacto com Fallback de Localização Independente do Celular
 
-Dispositivo vestível de emergência baseado em ESP32: aperta o botão, o celular recebe o alerta com link do mapa no Telegram em menos de 3 segundos; se o celular não responder em 15 s, um chaveiro com GPS e GSM próprios envia a localização por SMS.
+Dispositivo vestível de emergência baseado em ESP32: aperta o botão, o botão pede a localização ao celular por Bluetooth; se o celular não responder em 15 s, usa o próprio GPS. Nos dois casos, o SMS sai do módulo GSM do próprio botão. Nos testes desta etapa, a mensagem saiu do celular pelo Telegram, em menos de 3 s.
 
 **Autores:** Letícia Valladão e Vinicius Dias
 **Disciplina:** IBM3118 Sistemas Embarcados e IoT, IBMEC
@@ -17,41 +17,34 @@ Dispositivo vestível de emergência baseado em ESP32: aperta o botão, o celula
 
 Segundo o Dossiê Mulher 2026 do ISP-RJ, 159.041 meninas e mulheres foram vítimas de algum tipo de violência no estado do Rio de Janeiro em 2025 (uma a cada três minutos), e houve 105 feminicídios.
 
-Uma das premissas deste projeto é que, numa agressão, assalto ou sequestro, uma das primeiras ações do agressor tende a ser descartar o celular da vítima. Isso significa que um botão de pânico que depende exclusivamente do celular para enviar o alerta falha justamente quando é mais necessário. O projeto propõe um dispositivo vestível com dois caminhos independentes de envio: o celular como caminho rápido e um chaveiro com GPS e GSM próprios como fallback.
+Uma das premissas deste projeto é que, numa agressão, assalto ou sequestro, uma das primeiras ações do agressor tende a ser descartar o celular da vítima. Isso significa que um botão de pânico que depende exclusivamente do celular para enviar o alerta falha justamente quando é mais necessário. O projeto propõe um dispositivo vestível com dois caminhos independentes de localização: o celular como caminho rápido e o GPS próprio do botão como fallback, com o SMS sempre enviado pelo GSM do botão.
 
 ---
 
 ## 2. Arquitetura proposta
 
-O sistema tem três componentes físicos:
+O sistema tem dois componentes físicos:
 
-- **Unidade vestível (botão):** realiza apenas o disparo, o buzzer e o link BLE com o celular. Fica em deep sleep entre eventos para economizar bateria.
-- **Caminho primário (celular):** recebe o alerta via BLE, lê a localização, envia ao contato de emergência pelo Telegram e responde com ACK.
-- **Fallback (chaveiro):** unidade separada com GPS (NEO-6M) e GSM (SIM800L) próprios, que envia a localização por SMS sem depender do celular. Fica em estado de escuta de baixo consumo entre eventos.
+- **Botão vestível (ESP32 + NEO-6M + SIM800L):** dispara o alerta, pede a localização ao celular via BLE e aguarda o ACK. Se o ACK não chegar, lê o próprio GPS. Nos dois casos, envia o SMS pelo SIM800L. Fica em deep sleep entre eventos para economizar bateria.
+- **Celular:** fornece a localização via BLE quando disponível, respondendo com ACK "lat;lon;acc". Não é responsável pelo envio final da mensagem.
 
-O handover funciona assim: se o ACK do celular não chegar em T = 15 s, o alerta vai para o chaveiro. T é um tempo limite de espera, não um intervalo de envio. Um T muito curto dispararia o fallback enquanto o BLE ainda reconecta após o wake-up; um T muito longo atrasaria o alerta quando o celular realmente não está disponível.
+O handover funciona assim: se o ACK do celular não chegar em T = 15 s, o botão liga o próprio GPS. T é um tempo limite de espera, não um intervalo de envio. Um T muito curto dispararia o fallback enquanto o BLE ainda reconecta após o wake-up; um T muito longo atrasaria o alerta quando o celular realmente não está disponível.
 
 ### Diagrama de fluxo (dois caminhos)
 
 ```mermaid
 flowchart TD
-    A([Botão pressionado]) --> B[Unidade vestível\nESP32 acorda]
-    B --> BLE[Anúncio BLE\nPanicButton]
-    BLE --> D{ACK recebido\nem T = 15 s?}
-    D -- sim --> PH[Caminho do celular]
-    D -- não --> FK[Fallback: chaveiro]
-    PH --> GL[Geolocalização\nnavegador ou app]
-    GL --> TG[Telegram\nlink do mapa + precisão]
-    TG --> ACK[ACK lat;lon;acc para ESP32]
-    ACK --> LED1[LED azul + buzzer]
-    LED1 --> DS[Deep sleep]
-    FK --> GPS[GPS NEO-6M\nplanejado]
-    GPS --> GSM[SMS via SIM800L\nplanejado]
-    GSM --> LED2[LED vermelho + buzzer]
-    LED2 --> DS
+    A([Botão pressionado]) --> B[ESP32 acorda]
+    B --> C[Pede a localização ao celular via BLE]
+    C --> D{Localização recebida\nem T = 15 s?}
+    D -- sim --> L1[Posição do celular]
+    D -- não --> L2[GPS NEO-6M do botão\nplanejado]
+    L1 --> S[SMS via SIM800L do botão\nplanejado; nos testes: Telegram pelo celular]
+    L2 --> S
+    S --> Z[Buzzer confirma e volta ao deep sleep]
 ```
 
-### Diagrama de sequência (caminho do celular)
+### Diagrama de sequência (caminho do celular, como testado na AP1)
 
 ```mermaid
 sequenceDiagram
@@ -81,8 +74,8 @@ sequenceDiagram
 |---|---|---|---|
 | Microcontrolador | ESP32-WROVER-DEV (placa do laboratório) | ESP32 compacta (tipo SuperMini) | Dzahir e Chia 2023 (consumo do ESP32 com e sem deep sleep) |
 | Localização (caminho primário) | Geolocalização do navegador (Wi-Fi do notebook nos testes) | App nativo no celular | Dedes e Dempster 2005 (A-GPS, posicionamento indoor) |
-| GPS do fallback | LED vermelho (GPIO 27), simulado | NEO-6M | Mallapur 2025, Mishra 2025, Purnima 2025, Sudheer 2025 |
-| GSM do fallback | LED vermelho (GPIO 26), simulado; SIM800L soldado, ainda não integrado | SIM800L enviando SMS | Purnima 2025 |
+| GPS do próprio botão (fallback) | LED vermelho (GPIO 27), simulado | NEO-6M | Mallapur 2025, Mishra 2025, Purnima 2025, Sudheer 2025 |
+| GSM do próprio botão (SMS nos dois caminhos) | LED vermelho (GPIO 26), simulado; SIM800L soldado, ainda não integrado | SIM800L enviando SMS | Purnima 2025 |
 | Confirmação ao usuário | Buzzer (GPIO 32) | Buzzer | Mallapur 2025 |
 | Alimentação | USB do computador | LiPo 3,7 V 2000 mAh com carregador TP4056 | Mishra 2025, Purnima 2025, Caracas 2011 |
 | Estratégia de energia | Deep sleep com wake-up pelo botão | Idem | Caracas et al. 2011 |
@@ -206,7 +199,7 @@ Esta seção descreve o que foi desenvolvido especificamente para este projeto, 
 
 **Problema:** era preciso decidir automaticamente quando desistir do celular e acionar o fallback.
 
-**Solução:** `runAlertCycle()` aguarda o ACK por `T_MS`. Se o ACK chegar, acende o LED azul e registra os tempos. Se não chegar, acende os LEDs vermelho (GPS simulado, 1 s) e vermelho (GSM simulado), simulando a ativação do chaveiro. O valor T = 15 s foi escolhido para cobrir o tempo de reconexão BLE após o wake-up (mediana de 615 ms nos experimentos) mais o tempo de envio ao Telegram (mediana de 2,6 s), com margem.
+**Solução:** `runAlertCycle()` aguarda o ACK por `T_MS`. Se o ACK chegar, acende o LED azul e registra os tempos. Se não chegar, acende os LEDs vermelho (GPS simulado, 1 s) e vermelho (GSM simulado), simulando o GPS e o SMS do próprio botão. T = 15 s cobre com folga a reconexão BLE após o wake-up (mediana de 615 ms) e a entrega completa do alerta pelo celular em deep sleep (mediana de 2,6 s).
 
 ### c) Deep sleep com wake-up pelo botão (ext0 no GPIO 33)
 
@@ -260,9 +253,9 @@ Esta seção descreve o que foi desenvolvido especificamente para este projeto, 
 
 **Solução 2:** o listener de desconexão é registrado apenas uma vez (flag `disconnectListenerAdded`). A atribuição `alertChar.oncharacteristicvaluechanged = handleAlert` substitui qualquer handler anterior em vez de acumular.
 
-### i) Telegram em vez de SMS no caminho do celular
+### i) Telegram nos testes, SMS no produto
 
-**Motivo:** o iOS não permite que páginas web ou PWAs enviem SMS programaticamente. O envio por SMS fica reservado para o fallback via SIM800L.
+**Motivo:** o iOS não permite que apps ou páginas enviem SMS sozinhos. Por isso, nos testes a mensagem sai da página pelo Telegram; no produto final, o celular só fornece a localização no ACK e o SMS sai do SIM800L do próprio botão, nos dois caminhos.
 
 ### j) Coleta dos dados pelo Terminal sem gravar coordenadas
 
@@ -341,7 +334,7 @@ python3 results/analyze.py
 
 - **Envio periódico da localização:** o protótipo atual envia uma vez por aperto. Implementar envio a cada Δ segundos até a usuária cancelar.
 - **App nativo no celular:** substituir a página web por um app Android/iOS para resolver as restrições de geolocalização em segundo plano.
-- **Chaveiro como unidade separada:** montar o fallback em hardware dedicado, separado do botão vestível.
+- **GSM sempre registrado ou acordado sob demanda:** manter o SIM800L registrado na rede entre eventos gasta energia; acordá-lo só no alerta adiciona alguns segundos de registro.
 - **Versão compacta:** substituir a ESP32-WROVER-DEV de laboratório por uma ESP32 menor (tipo SuperMini) para o dispositivo final.
 
 ---
