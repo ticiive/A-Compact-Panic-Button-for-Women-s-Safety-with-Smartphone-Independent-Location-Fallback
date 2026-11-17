@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.env
+log_*.txt
+*.mov
+*.wav
+article/*.aux
+article/*.bbl
+article/*.blg
+article/*.log
+article/*.out
+macos/build/

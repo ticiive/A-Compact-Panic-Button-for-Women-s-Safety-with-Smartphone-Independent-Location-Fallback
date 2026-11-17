@@ -1,4 +1,4 @@
-# Dados dos experimentos
+# Ensaios de Bluetooth da AP1
 
 ## Como os dados foram coletados
 
@@ -46,3 +46,11 @@ python3 results/analyze.py
 ```
 
 Não requer dependências externas além da biblioteca padrão do Python 3.
+
+## Ensaios de voz da AP2
+
+Os quatro registros de 15/11/2026 geraram dois CSVs. Cada linha de `voice_trials.csv` identifica o horário de início (HHMMSS), condição, tentativas e detecções. O denominador da primeira rodada foi anotado no ensaio. Cada linha de `voice_detections.csv` representa um evento KWS. A latência da coluna `quiet_latency_ms` vai do fim estimado da fala até a linha de detecção na USB. Nas rodadas com vídeo, o detector de fim de fala também reage às vozes de fundo, por isso essa coluna fica vazia.
+
+O teste funcional curto de 16/11 contém duas marcações de tentativa depois de uma detecção. Ele não integra as quatro rodadas controladas. A eficácia observada de 96% por condição descreve somente tentativas intencionais. Os CSVs não contêm áudio, coordenadas pessoais nem identificadores de chat.
+
+Os eventos selecionados em [fallback_examples.csv](fallback_examples.csv) mostram a troca de fonte entre os envios 1 e 2 da sessão 233841 e o esgotamento da janela GNSS no envio 61 da sessão 212851 (14/11). O campo de duração segue o evento de origem. As coordenadas e o texto integral das mensagens foram omitidos.

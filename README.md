@@ -1,360 +1,79 @@
-# Botão de Pânico Compacto com Fallback de Localização Independente do Celular
+# Botão de emergência com localização alternativa ao celular
 
-Dispositivo vestível de emergência baseado em ESP32: aperta o botão, o botão pede a localização ao celular por Bluetooth; se o celular não responder em 15 s, usa o próprio GPS. Nos dois casos, o SMS sai do módulo GSM do próprio botão. Nos testes desta etapa, a mensagem saiu do celular pelo Telegram, em menos de 3 s.
+Projeto de Sistemas Embarcados (IBM3118) de Letícia Valladão e Vinicius Dias, Ibmec, 2026.2. O botão foi pensado para passar a maior parte do tempo guardado, pronto para iniciar um pedido de ajuda. A ESP32 tenta obter coordenadas de um cliente Bluetooth. Se o cliente some, a placa mantém a emergência ativa e passa a pedir a posição ao receptor GNSS.
 
-**Autores:** Letícia Valladão e Vinicius Dias
-**Disciplina:** IBM3118 Sistemas Embarcados e IoT, IBMEC
-**Professor:** Rigel Fernandes
-**Grupo:** G7
-**Artigo:** "A Compact Panic Button for Women's Safety with Smartphone-Independent Location Fallback" (SBrT)
-**Página do celular:** <https://ticiive.github.io/A-Compact-Panic-Button-for-Women-s-Safety-with-Smartphone-Independent-Location-Fallback/>
+[Artigo e referências](article/) · [Firmware integrado](firmware/panic_button/panic_button.ino) · [Guia da demonstração](docs/demonstracao.md) · [Dados de bancada](results/) · [Simulação de autonomia](simulation/)
 
-<!-- adicionar foto do protótipo em img/prototipo.jpg -->
+<img src="docs/figures/prototipo.jpg" width="380" alt="ESP32 na protoboard com botão, buzzer e LEDs de sinalização">
 
----
+*Montagem da AP1. A protoboard contém o botão de acionamento, a ESP32-WROVER e os indicadores usados para acompanhar o alerta.*
 
-## 1. Motivação e problema
+## O que acontece após o acionamento
 
-Segundo o Dossiê Mulher 2026 do ISP-RJ, 159.041 meninas e mulheres foram vítimas de algum tipo de violência no estado do Rio de Janeiro em 2025 (uma a cada três minutos), e houve 105 feminicídios.
+<img src="docs/figures/flow.png" width="570" alt="Fluxograma da seleção da posição pelo celular ou pelo GNSS">
 
-Uma das premissas deste projeto é que, numa agressão, assalto ou sequestro, uma das primeiras ações do agressor tende a ser descartar o celular da vítima. Isso significa que um botão de pânico que depende exclusivamente do celular para enviar o alerta falha justamente quando é mais necessário. O projeto propõe um dispositivo vestível com dois caminhos independentes de localização: o celular como caminho rápido e o GPS próprio do botão como fallback, com o SMS sempre enviado pelo GSM do botão.
+1. No perfil de botão, um toque acorda a ESP32 do sono profundo. No perfil de voz, a placa fica acordada a 160 MHz e aceita o botão ou “abacaxi”. Os dois acionamentos entram na mesma rotina de emergência.
+2. A placa anuncia o serviço BLE e pede uma posição. O cliente devolve latitude, longitude e precisão. O prazo configurado na revisão AP2 é **6 s**.
+3. Sem coordenadas válidas do cliente, a ESP32 aciona a aquisição GNSS. Ela confere o checksum e o estado da sentença RMC e converte as coordenadas. Se os **90 s** terminarem, o alerta leva a última posição conhecida, identificada como tal, ou informa que a localização está indisponível.
+4. Em ambos os caminhos, o firmware solicita um SMS à interface do modem. Na bancada, a ponte USB emula o SIM800L e pode encaminhar o texto ao Telegram. `SMS_OK` corresponde à aceitação pelo modem emulado. O encaminhamento pelo Telegram tem registro próprio.
+5. A placa guarda estado, contagem e próxima atualização na memória RTC. Um atraso na aquisição não reinicia a contagem do intervalo. Os ensaios integrados usam **60 s** entre atualizações. Depois de uma falha do cliente, os próximos envios dessa emergência seguem direto ao GNSS. Segurar o botão por **3 s** encerra a emergência.
 
----
+| Função | Implementação de bancada |
+|---|---|
+| Botão, controle da emergência e processamento de voz | ESP32-WROVER física. O botão usa GPIO 33. O Mac fornece amostras mono de 16 kHz pela USB. A inferência roda na placa. |
+| Cliente de localização | Página Web Bluetooth no ensaio histórico. Na demonstração, o painel nativo do macOS usa Core Bluetooth e Core Location. |
+| GNSS e modem celular | O Mac fornece sentenças NMEA e respostas AT. O firmware decide se a posição é válida e constrói a mensagem. |
+| Alimentação e gabinete | Placa alimentada por USB. Bateria de 2.000 mAh, módulos físicos e montagem compacta fazem parte do projeto de integração. |
 
-## 2. Arquitetura proposta
+## Resultados medidos
 
-O sistema tem dois componentes físicos:
-
-- **Botão vestível (ESP32 + NEO-6M + SIM800L):** dispara o alerta, pede a localização ao celular via BLE e aguarda o ACK. Se o ACK não chegar, lê o próprio GPS. Nos dois casos, envia o SMS pelo SIM800L. Fica em deep sleep entre eventos para economizar bateria.
-- **Celular:** fornece a localização via BLE quando disponível, respondendo com ACK "lat;lon;acc". Não é responsável pelo envio final da mensagem.
-
-O handover funciona assim: se o ACK do celular não chegar em T = 15 s, o botão liga o próprio GPS. T é um tempo limite de espera, não um intervalo de envio. Um T muito curto dispararia o fallback enquanto o BLE ainda reconecta após o wake-up; um T muito longo atrasaria o alerta quando o celular realmente não está disponível.
-
-### Diagrama de fluxo (dois caminhos)
-
-```mermaid
-flowchart TD
-    A([Botão pressionado]) --> B[ESP32 acorda]
-    B --> C[Pede a localização ao celular via BLE]
-    C --> D{Localização recebida\nem T = 15 s?}
-    D -- sim --> L1[Posição do celular]
-    D -- não --> L2[GPS NEO-6M do botão\nplanejado]
-    L1 --> S[SMS via SIM800L do botão\nplanejado; nos testes: Telegram pelo celular]
-    L2 --> S
-    S --> Z[Buzzer confirma e volta ao deep sleep]
-```
-
-### Diagrama de sequência (caminho do celular, como testado na AP1)
-
-```mermaid
-sequenceDiagram
-    participant ESP as Botão vestível (ESP32)
-    participant CEL as Celular (Chrome)
-    participant TG as Telegram
-
-    ESP->>ESP: Aperto detectado, wake-up
-    ESP->>CEL: Anúncio BLE (PanicButton)
-    CEL->>ESP: Conexão GATT
-    loop A cada 500 ms até ACK
-        ESP->>CEL: Notify ALERT
-    end
-    CEL->>CEL: Geolocalização (enableHighAccuracy)
-    CEL->>TG: sendMessage (link do mapa + precisão)
-    TG-->>CEL: 200 OK
-    CEL->>ESP: Write ACK "lat;lon;acc"
-    ESP->>ESP: LED azul + buzzer
-    ESP->>ESP: Deep sleep
-```
-
----
-
-## 3. Estado atual: protótipo da AP1 versus versão final
-
-| Componente | Protótipo AP1 | Versão final | Referência que justifica a escolha |
-|---|---|---|---|
-| Microcontrolador | ESP32-WROVER-DEV (placa do laboratório) | ESP32 compacta (tipo SuperMini) | Dzahir e Chia 2023 (consumo do ESP32 com e sem deep sleep) |
-| Localização (caminho primário) | Geolocalização do navegador (Wi-Fi do notebook nos testes) | App nativo no celular | Dedes e Dempster 2005 (A-GPS, posicionamento indoor) |
-| GPS do próprio botão (fallback) | LED vermelho (GPIO 27), simulado | NEO-6M | Mallapur 2025, Mishra 2025, Purnima 2025, Sudheer 2025 |
-| GSM do próprio botão (SMS nos dois caminhos) | LED vermelho (GPIO 26), simulado; SIM800L soldado, ainda não integrado | SIM800L enviando SMS | Purnima 2025 |
-| Confirmação ao usuário | Buzzer (GPIO 32) | Buzzer | Mallapur 2025 |
-| Alimentação | USB do computador | LiPo 3,7 V 2000 mAh com carregador TP4056 | Mishra 2025, Purnima 2025, Caracas 2011 |
-| Estratégia de energia | Deep sleep com wake-up pelo botão | Idem | Caracas et al. 2011 |
-
----
-
-## 4. Hardware
-
-### Ligações na protoboard
-
-| Componente | Pino da placa | Observação |
+| Ensaio | Resultado | O que o relógio mede |
 |---|---|---|
-| Botão | GPIO 33 e GND | Pernas na diagonal; sem resistor externo (pull-up interno ativado por software) |
-| Buzzer | GPIO 32 e GND | Ativo em nível alto |
-| LED azul (caminho celular) | GPIO 13 e GND | Resistor de 220 a 330 Ohm em série para o GND |
-| LED vermelho (GPS simulado) | GPIO 27 e GND | Resistor de 220 a 330 Ohm em série para o GND |
-| LED vermelho (GSM simulado) | GPIO 26 e GND | Resistor de 220 a 330 Ohm em série para o GND |
+| Placa acordada, navegador AP1 | 16 ACKs em 16 tentativas. Mediana **0,555 s**. | Até a placa receber o ACK da página. |
+| Após sono profundo | 21 ACKs em 22 tentativas. Dois exigiram reconexão manual. Nas 19 automáticas, mediana **2,602 s** e faixa **2,039–5,262 s**. | Do início do firmware ao ACK. Exclui o boot da ROM. Na página AP1, a requisição ao Telegram precedia o ACK. O cliente atual inverte essa ordem. |
+| Palavra em silêncio | **28/30 e 20/20**. Mediana de **216 ms** nas 48 detecções. | Do fim estimado da fala ao registro USB. |
+| Palavra com vídeo ao fundo | **19/20 e 29/30**. | O vídeo interfere na estimativa do fim da fala. A análise usa as contagens de detecção. |
 
-A trilha de GND da protoboard é dividida no meio e precisa de uma ponte de fio para conectar os dois lados.
+<img src="docs/figures/deadline.png" width="450" alt="Curva acumulada de confirmações BLE após sair do sono profundo">
+<img src="docs/figures/keyword.png" width="450" alt="Reconhecimento da palavra em quatro rodadas de bancada">
 
-### Notas de montagem
+A janela histórica era de 60 s. Dezenove respostas foram automáticas, das quais dezoito chegaram até 4 s. A última incluiu uma nova consulta de localização no navegador. O limite de **6 s** deixa 0,738 s acima do máximo observado e antecipa em 9 s a tentativa de GNSS em relação aos 15 s da AP1. A validação prospectiva no firmware de 6 s continua pendente.
 
-- **GPIO 33 para o botão:** é um pino RTC, necessário para acordar a placa do deep sleep via wake-up por ext0. Pinos comuns não funcionam para esse fim.
-- **Pinos a evitar:** GPIO 16 e 17 (usados pela PSRAM na WROVER), GPIO 12 (pino de strapping, pode impedir o boot se puxado para cima na inicialização), RX/TX (GPIO 1 e 3, usados pelo Serial) e os pinos da flash interna (GPIO 6 a 11).
-- **Cabo USB:** usar cabo de dados, não de carga; cabos só de carga não têm os fios D+ e D- e a placa não aparece no computador.
+A revisão integrada também exercitou a perda do cliente depois do primeiro envio e o uso da última posição conhecida após o timeout do GNSS. O teste dedicado de 30 minutos sem a palavra e o ensaio de acionamento com um mesmo ponto final estão disponíveis em [experiments/activation](experiments/activation/LEIA-ME.txt). A taxa de falsos alarmes por hora continua em aberto.
 
-### Integração planejada do SIM800L (ainda não feita)
+## Consumo e autonomia projetados
 
-O módulo SIM800L já foi soldado mas ainda não foi integrado ao firmware.
+<img src="docs/figures/profiles.png" width="490" alt="Tempos de processamento medidos e autonomia de espera modelada por perfil">
 
-- **Alimentação:** entre 3,4 e 4,4 V, com picos de até 2 A na transmissão. Não alimentar pelo pino 3V3 da placa (corrente insuficiente); usar a bateria LiPo diretamente.
-- **Capacitor:** 1000 µF perto do pino VCC do módulo para absorver os picos de corrente.
-- **GND comum** com a ESP32.
-- **Conexão serial:** TXD do módulo no GPIO 18 da placa; RXD do módulo no GPIO 19 da placa.
-- **SIM card:** micro SIM sem PIN habilitado e com crédito ativo.
-- **Verificação de rede:** o LED do módulo piscando a cada 3 s indica registro bem-sucedido na rede.
-- **Comandos de teste:** `AT` (deve responder `OK`), `AT+CSQ` (nível do sinal), `AT+CREG?` (status de registro).
-- **Risco:** o SIM800L opera em 2G (GSM/GPRS). Algumas operadoras brasileiras têm planos de desligamento gradual das redes 2G.
+| Perfil de espera | Corrente modelada | Autonomia ideal |
+|---|---:|---:|
+| Só botão em sono profundo | 0,160 mA | 12.500 h |
+| Botão e voz a 160 MHz | 46,65 mA | 43 h |
+| Botão e voz a 240 MHz | 70,65 mA | 28 h |
 
----
+A escuta a 160 MHz consome cerca de 292 vezes a corrente de espera do perfil de botão no modelo. A duração real depende da placa montada, das perdas e da bateria. Os tempos de voz e Bluetooth mostrados acima terminam em eventos diferentes.
 
-## 5. Software
+<img src="simulation/energy_lifetime.png" width="510" alt="Autonomia projetada em função do intervalo de envio com posição do celular ou GNSS a frio">
 
-### Firmware
+Durante a emergência, espaçar as atualizações de um para quatro minutos eleva a autonomia projetada de **93 para 325 h** com coordenadas do cliente e de **30 para 113 h** com aquisição GNSS a frio. O modelo assume 27 s por aquisição a frio, 3 s por transação de SMS e usa o ACK histórico de 2,602 s como aproximação para a etapa do celular. O script registra os parâmetros e as fontes. [Simulador](simulation/energy_sim.py) · [Gráfico de espera por perfil](simulation/standby_activation.pdf)
 
-- **IDE:** Arduino IDE 2.x
-- **Pacote de placas:** esp32 da Espressif, versão 3.3.11
-- **Placa selecionada:** "ESP32 Dev Module"
-- **Upload Speed:** 115200
-- **Serial Monitor:** 115200 baud
+## Implementação do grupo
 
-> **Mac com Apple Silicon:** na primeira vez, a IDE pode dar o erro `bad CPU type in executable`. Solução: instalar o Rosetta com `softwareupdate --install-rosetta --agree-to-license`.
+- **Reconexão BLE.** Serviço GATT com notificação de alerta e característica de escrita para o ACK. O painel guarda o identificador da placa e tenta retomar a conexão; o navegador depende também das permissões e do seu estado de execução.
+- **Acionamento por voz.** A janela tem um segundo e avança em fatias de 250 ms. O firmware exige duas pontuações consecutivas de pelo menos 0,80. A troca de classificador reduziu a estimativa de inferência de 826 para 11 ms e a RAM do classificador de 166,2 para 14,7 kB. A captura de áudio e a extração de características têm custo adicional.
+- **Ponte de bancada.** Áudio, NMEA e respostas do modem trafegam pela USB a 460.800 baud. A posição fixa permite repetir a demonstração. O firmware verifica cancelamento durante a espera da posição.
+- **Envio periódico.** O agendamento usa o relógio RTC para manter a cadência. A falha do cliente é registrada uma vez por emergência e impede tentativas BLE repetidas durante o fallback.
 
-### Diretivas de compilação
+## Reproduzir a análise
 
-O firmware tem duas diretivas independentes no topo do arquivo:
+Com Python 3, NumPy e Matplotlib instalados, execute na raiz do repositório:
 
-```cpp
-#define USE_DEEP_SLEEP 1   // 1 = dorme entre acionamentos; 0 = fica acordada
-#define MEASURE_MODE   1   // 1 = T de 60 s (medição); 0 = T de 15 s (produção)
-```
-
-| `USE_DEEP_SLEEP` | `MEASURE_MODE` | Comportamento |
-|---|---|---|
-| 0 | 0 | Placa acordada, T = 15 s. Modo de produção sem deep sleep. |
-| 0 | 1 | Placa acordada, T = 60 s. Para medir tempos sem risco de fallback acidental. |
-| 1 | 0 | Deep sleep, T = 15 s. Modo de produção final. |
-| 1 | 1 | Deep sleep, T = 60 s. Configuração usada nos experimentos desta AP1. |
-
-### Protocolo BLE
-
-- **Nome do dispositivo:** `PanicButton`
-- **Serviço (Nordic UART):** `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
-- **Característica ALERT** (ESP32 para celular, notify): `6e400003-b5a3-f393-e0a9-e50e24dcca9e`
-  - Payload: string `"ALERT"`, reenviada a cada 500 ms até o ACK chegar.
-- **Característica ACK** (celular para ESP32, write): `6e400002-b5a3-f393-e0a9-e50e24dcca9e`
-  - Payload: string `"lat;lon;acc"` com a localização confirmada.
-
-### Formato das linhas de log (Serial Monitor)
-
-```
-RESULT,tentativa,modo,caminho,tempo_ms,lat;lon;acc
-MEAS,tentativa,conectou_ms,ack_ms
-```
-
-Exemplos (coordenadas fictícias):
-
-```
-RESULT,3,deepsleep,celular,2518,-22.90;-43.20;35
-MEAS,3,593,2518
-RESULT,18,deepsleep,fallback,-,-
-```
-
-### Página do celular
-
-Arquivo `docs/index.html`, hospedado no GitHub Pages (HTTPS obrigatório para Web Bluetooth e geolocalização).
-
-- **Web Bluetooth:** conecta ao dispositivo `PanicButton`, subscreve notificações da característica ALERT e escreve o ACK na característica ACK.
-- **Geolocalização:** `enableHighAccuracy: true`, `timeout: 10000`, `maximumAge: 0`.
-- **Telegram:** envia mensagem com link do mapa (`maps.google.com/?q=lat,lon`) e precisão em metros via Bot API (`sendMessage`).
-- **Token do bot:** fixo na constante `BOT_TOKEN` na página. A pessoa informa apenas o `chat_id` de quem recebe o alerta (obtido com o `@userinfobot` após abrir o bot no Telegram e tocar em Iniciar). O `chat_id` é salvo no `localStorage` do navegador.
-- **Compatibilidade:** funciona no Chrome (computador e Android) e no Bluefy (iPhone). Não funciona no Safari, que não implementa Web Bluetooth.
-
----
-
-## 6. Customizações e esforços de desenvolvimento
-
-Esta seção descreve o que foi desenvolvido especificamente para este projeto, além de exemplos e bibliotecas padrão.
-
-### a) Protocolo de alerta próprio sobre BLE GATT
-
-**Padrão disponível:** a biblioteca BLE do Arduino para ESP32 oferece um servidor GATT genérico; os exemplos mostram apenas troca de strings.
-
-**Problema:** uma única notificação BLE pode chegar antes de o celular terminar de subscrever as notificações, fazendo com que o alerta nunca fosse recebido.
-
-**Solução:** reutilizamos as UUIDs do serviço Nordic UART com semântica própria: a característica ALERT é reenviada a cada 500 ms em loop até chegar o ACK, cobrindo qualquer atraso na subscrição. Implementado em `runAlertCycle()`.
-
-### b) Lógica de handover com tempo limite T
-
-**Padrão disponível:** nenhum exemplo de handover multicanal.
-
-**Problema:** era preciso decidir automaticamente quando desistir do celular e acionar o fallback.
-
-**Solução:** `runAlertCycle()` aguarda o ACK por `T_MS`. Se o ACK chegar, acende o LED azul e registra os tempos. Se não chegar, acende os LEDs vermelho (GPS simulado, 1 s) e vermelho (GSM simulado), simulando o GPS e o SMS do próprio botão. T = 15 s cobre com folga a reconexão BLE após o wake-up (mediana de 615 ms) e a entrega completa do alerta pelo celular em deep sleep (mediana de 2,6 s).
-
-### c) Deep sleep com wake-up pelo botão (ext0 no GPIO 33)
-
-**Padrão disponível:** a documentação do ESP32 mostra `esp_sleep_enable_ext0_wakeup`, mas omite detalhes sobre pull-ups e liberação de pinos após o boot.
-
-**Problema 1:** o pull-up comum (`INPUT_PULLUP`) é desligado durante o deep sleep, fazendo o pino flutuar e causando wake-ups espúrios.
-
-**Solução 1:** antes de dormir, ativar o pull-up RTC com `rtc_gpio_pullup_en(GPIO_NUM_33)`, que mantém o nível alto mesmo com a CPU desligada.
-
-**Problema 2:** após o wake-up, o pino ainda está configurado como pino RTC e não responde a `digitalRead()`.
-
-**Solução 2:** no início do `setup()`, liberar o pino com `rtc_gpio_deinit(GPIO_NUM_33)` para restaurá-lo ao modo GPIO comum.
-
-**Problema 3:** se o botão ainda estivesse pressionado ao entrar em sleep, a placa acordaria imediatamente.
-
-**Solução 3:** em `goToSleep()`, aguardar o botão ser solto (`while digitalRead(PIN_BUTTON) == LOW`) antes de configurar o wake-up.
-
-### d) LEDs semiacesos durante o deep sleep (gpio_hold)
-
-**Problema:** durante o deep sleep, os pinos de saída ficam flutuando. Os LEDs vermelhos acendiam fracamente, causando confusão visual.
-
-**Solução:** antes de dormir, congelar o estado dos três pinos de LED com `gpio_hold_en()`. No boot, liberar com `gpio_hold_dis()` antes de configurar os pinos. Implementado em `goToSleep()` e `setup()`.
-
-### e) Contador de tentativas com RTC_DATA_ATTR
-
-**Problema:** variáveis comuns são apagadas a cada deep sleep, perdendo o número de tentativas.
-
-**Solução:** declarar `RTC_DATA_ATTR int trial` para armazenar o contador na RTC RAM, que é preservada entre deep sleeps enquanto houver alimentação.
-
-### f) Encerrar a conexão BLE antes de dormir
-
-**Problema:** sem desconexão explícita, a placa simplesmente sumia do ar. O celular levava de alguns segundos a dezenas de segundos para detectar a queda. Se a usuária apertasse o botão nesse intervalo, a página tentava reconectar antes de a queda ser detectada e frequentemente travava, fazendo o alerta cair no fallback.
-
-**Solução:** em `goToSleep()`, chamar `server->disconnect(server->getConnId())` antes de configurar o sleep. Com isso, a queda passou a ser detectada em cerca de 3 a 4 s após cada alerta, e a página inicia a reconexão mais cedo e de forma mais confiável.
-
-### g) Instrumentação para os experimentos
-
-**Necessidade:** medir o tempo de reconexão e o tempo de ACK contados a partir do aperto do botão, para avaliar se o sistema é compatível com T = 15 s.
-
-**Solução:** `millis()` recomeça no wake-up, então `t0 = millis()` capturado no início do `setup()` serve como referência. A variável global `tConnect` é preenchida no callback `onConnect` com `millis()` apenas na primeira conexão do ciclo (protegida por `if (tConnect == 0)`). A linha `MEAS,tentativa,conectou_ms,ack_ms` é impressa no Serial logo após o RESULT. A diretiva `MEASURE_MODE 1` aumenta T para 60 s, permitindo observar a reconexão completa sem cair no fallback.
-
-### h) Página do celular feita do zero
-
-**Padrão disponível:** exemplos de Web Bluetooth mostram conexão simples sem reconexão automática.
-
-**Problema 1:** ao sair do deep sleep, a placa encerra a conexão. O celular precisa reconectar sem que a usuária precise abrir o seletor de dispositivos a cada aperto.
-
-**Solução 1:** reutilizar o mesmo objeto `BluetoothDevice` obtido na primeira conexão. O listener `gattserverdisconnected` chama `reconnect()`, que tenta `connectGatt()` em loop. Para evitar que o `connect()` fique pendurado quando a placa está dormindo, cada tentativa tem um limite de 4 s via `withTimeout()` (implementado com `Promise.race`). Uma flag `reconnecting` evita loops paralelos.
-
-**Problema 2:** cada clique no botão "Conectar" adicionava um novo listener de `gattserverdisconnected`; cada reconexão bem-sucedida em `connectGatt()` adicionava um novo listener de `characteristicvaluechanged`. Com 4 cliques, cada evento disparava 4 vezes, causando 4 alertas paralelos no Telegram.
-
-**Solução 2:** o listener de desconexão é registrado apenas uma vez (flag `disconnectListenerAdded`). A atribuição `alertChar.oncharacteristicvaluechanged = handleAlert` substitui qualquer handler anterior em vez de acumular.
-
-### i) Telegram nos testes, SMS no produto
-
-**Motivo:** o iOS não permite que apps ou páginas enviem SMS sozinhos. Por isso, nos testes a mensagem sai da página pelo Telegram; no produto final, o celular só fornece a localização no ACK e o SMS sai do SIM800L do próprio botão, nos dois caminhos.
-
-### j) Coleta dos dados pelo Terminal sem gravar coordenadas
-
-**Problema:** o processo `serial-monitor` da Arduino IDE ocupa a porta serial exclusivamente; ao rodar os testes com outro processo lendo a porta, a IDE dava conflito.
-
-**Solução:** fechar a IDE e ler a porta diretamente pelo Terminal:
-
-```bash
-(stty 115200; cat) < /dev/cu.usbserial-110 | grep --line-buffered -E "MEAS|fallback" | tee -a ~/Desktop/meas.txt
-```
-
-O filtro `grep` mantém apenas as linhas `MEAS` e `fallback`, descartando as linhas `RESULT` que contêm as coordenadas reais. Se a porta estiver ocupada por outro processo, identificar com `lsof /dev/cu.usbserial-110` e encerrar com `kill <PID>`.
-
----
-
-## 7. Dificuldades encontradas
-
-- **Placa não aparecia no computador:** cabo USB só de carga, sem os fios de dados. Trocado por cabo de dados.
-- **"bad CPU type in executable":** compilador x86 sem Rosetta. Resolvido com `softwareupdate --install-rosetta --agree-to-license`.
-- **"Missing FQBN":** nenhuma placa selecionada na IDE. Resolvido instalando o pacote esp32 da Espressif e selecionando "ESP32 Dev Module".
-- **"Unable to verify flash chip connection"** em 921600: Upload Speed reduzido para 115200.
-- **Caracteres estranhos no Serial Monitor:** monitor configurado em 9600, trocado para 115200.
-- **Botão não acordava a placa:** trilha de GND da protoboard sem ligação (dividida no meio) e um resistor externo desnecessário interferindo no pino. Resolvido com ponte de fio e remoção do resistor.
-- **LEDs não acendiam:** mesmo problema de trilha dividida. Resolvido com a ponte.
-- **LEDs semiacesos no deep sleep:** pinos flutuando. Resolvido com `gpio_hold_en` (item f da seção anterior).
-- **Telegram respondendo 404:** o `chat_id` tinha sido preenchido no lugar do token do bot e vice-versa.
-- **"navigator.bluetooth undefined":** tentativa de usar no Safari, que não implementa Web Bluetooth. Resolvido usando o Chrome.
-- **Alerta duplicado com aba em segundo plano:** com a aba minimizada, o Chrome atrasou a geolocalização em 14 a 22 s, a placa foi para o fallback e o alerta ainda chegou pelo celular depois. O sistema falha para o lado da redundância (dois alertas), não da perda.
-- **Reconexão travada em deep sleep:** `device.gatt.connect()` sem limite de tempo ficava pendurado. Resolvido com `withTimeout(connectGatt(), 4000)` e desconexão explícita antes do sleep.
-- **Porta serial ocupada:** processo `serial-monitor` da IDE. Resolvido fechando a IDE e lendo a porta diretamente pelo Terminal.
-
----
-
-## 8. Experimentos e resultados
-
-### Configuração
-
-- Placa: ESP32-WROVER-DEV com firmware `USE_DEEP_SLEEP 1`, `MEASURE_MODE 1` (T = 60 s).
-- O papel do celular foi desempenhado pela página `docs/index.html` no Chrome de um MacBook.
-- Localização via Wi-Fi do notebook, precisão informada de aproximadamente 35 m. Na maioria das tentativas, o navegador reutilizou a posição em cache (tempo de dezenas de milissegundos). Os tempos de ACK são, portanto, um limite inferior para um celular que precise obter posição GNSS nova.
-
-### Resultados quantitativos
-
-| Condição | n | Mediana (ms) | Média ± dp (ms) | Faixa (ms) |
-|---|---|---|---|---|
-| Acordada, ACK | 16 | 555 | 589 ± 123 | 520 a 1030 |
-| Deep sleep, reconexão BLE | 19 | 615 | 676 ± 144 | 574 a 1113 |
-| Deep sleep, ACK | 19 | 2602 | 2682 ± 691 | 2039 a 5262 |
-
-- **Série acordada:** 16 de 16 alertas pelo caminho do celular. O maior valor (1030 ms) corresponde ao tempo total de ACK; o envio ao Telegram teve mediana de 348 ms, sobrando cerca de 200 ms para o overhead de BLE e processamento.
-- **Série deep sleep:** 21 de 22 alertas pelo caminho do celular; 2 tentativas excluídas da estatística por terem exigido conexão manual pelo seletor do navegador. A única falha (tentativa 18) foi a página travando na reconexão antes da correção implementada na Tarefa 2. O deep sleep acrescenta cerca de 2 s por alerta em relação ao modo acordado, mas continua bem dentro de T = 15 s. O maior valor de ACK (5262 ms, tentativa 2) coincide com a única vez em que o navegador obteve posição nova em vez de reusar o cache (2631 ms para a geolocalização); sem essa tentativa, ACK = 2539 ± 303 ms.
-
-### Resultados qualitativos
-
-- Fluxo completo funcionando: mensagem no Telegram com link do Google Maps e precisão, LED azul acendendo após o ACK.
-- Decisão de fallback funcionando: LEDs vermelho do GPS (GPIO 27) e do GSM (GPIO 26) acendendo quando T expira.
-- **Alerta duplicado com aba em segundo plano:** com a aba minimizada no Chrome, a geolocalização atrasou 14 a 22 s, a placa foi para o fallback e o Telegram ainda chegou depois. O sistema falha para o lado da redundância, não da perda do alerta.
-- **Necessidade de app nativo:** a geolocalização via navegador tem restrições de segundo plano no iOS e pode ser interrompida; um app nativo (item de trabalho futuro) elimina essa limitação.
-
-Os dados individuais e o script de análise estão na pasta [`results/`](results/).
-
-```bash
+```sh
 python3 results/analyze.py
+python3 results/plot_results.py
+(cd simulation && python3 energy_sim.py)
 ```
 
----
+As medições BLE estão em [deepsleep_meas.csv](results/deepsleep_meas.csv) e [awake_summary.csv](results/awake_summary.csv). Para voz, [voice_trials.csv](results/voice_trials.csv) reúne os denominadores das quatro rodadas e [voice_detections.csv](results/voice_detections.csv) contém as detecções individuais. O total de 30 tentativas da primeira rodada vem das anotações do ensaio. A ponte também atende à demonstração com botão, e o [script de preparação de áudio](tools/split_keyword.py) gera amostras de um segundo para o treinamento.
 
-## 9. Limitações e trabalhos futuros
-
-- **Integração do NEO-6M e SIM800L:** testar o fallback de ponta a ponta com envio real de SMS.
-- **Alimentação com LiPo:** medir a corrente na fonte de bancada nos três estados (deep sleep, acordada ociosa, acordada conectada) e estimar a autonomia em função do intervalo de envio periódico Δ:
-
-  `I_médio = (I_ativo × t_ativo + I_sono × (Δ − t_ativo)) / Δ`
-
-  `Autonomia = 2000 mAh / I_médio`
-
-- **Envio periódico da localização:** o protótipo atual envia uma vez por aperto. Implementar envio a cada Δ segundos até a usuária cancelar.
-- **App nativo no celular:** substituir a página web por um app Android/iOS para resolver as restrições de geolocalização em segundo plano.
-- **GSM sempre registrado ou acordado sob demanda:** manter o SIM800L registrado na rede entre eventos gasta energia; acordá-lo só no alerta adiciona alguns segundos de registro.
-- **Versão compacta:** substituir a ESP32-WROVER-DEV de laboratório por uma ESP32 menor (tipo SuperMini) para o dispositivo final.
-
----
-
-## 10. Segurança e privacidade
-
-O token do bot do Telegram está público na página `docs/index.html`, por decisão do grupo para simplificar o uso durante a disciplina. Ele deve ser revogado no BotFather ao fim da disciplina. Nenhuma coordenada real é publicada em nenhum arquivo deste repositório.
-
----
-
-## 11. Referências
-
-- Mallapur, S. et al. "Women safety device using IoT". *Journal of Science and Research Technology* (JSRT), 2025.
-- Sogi, N. R. et al. "SMARISA: A Raspberry Pi based smart ring for women safety using IoT". *ICIRCA*, 2018.
-- Juárez, M. "Technology-facilitated gender-based violence". *International Criminology*, 2026.
-- Akram, W., Jain, N. e Hemalatha, C. S. "Design of a smart safety device for women using IoT". *Procedia Computer Science*, 2019.
-- Caracas, A. et al. "Low-power personal emergency response". *IEEE SECON*, 2011.
-- Mishra, R. e Saha, P. "SafeGuard Bangle: IoT-based women safety device". *IEMENTech*, 2025.
-- Dzahir, M. A. M. e Chia, K. K. "ESP32 deep sleep power optimization for IoT applications". *3ICT*, 2023.
-- Purnima, G. et al. "Smart women safety device using ESP32". *ICSCDS*, 2025.
-- Sudheer, K., Naveen, K. e P., H. "IoT-based women safety system with GPS and GSM". *ICSSS*, 2025.
-- Dedes, G. e Dempster, A. G. "Indoor GPS positioning: challenges and opportunities". *VTC-2005-Fall*, IEEE, 2005.
-- Instituto de Segurança Pública do Rio de Janeiro (ISP-RJ). *Dossiê Mulher 2026*. Rio de Janeiro, 2026.
+O próximo ensaio físico é integrar receptor, modem, microfone e bateria, medir a corrente em cada estado e confirmar entrega de SMS com o cliente BLE indisponível. Também falta avaliar o reconhecimento com o dispositivo no bolso e a recepção GNSS dentro e fora de edifícios.

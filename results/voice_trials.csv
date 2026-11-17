@@ -1,0 +1,5 @@
+run,log_time,condition,attempts,detected
+1,145929,quiet,30,28
+2,150329,video,20,19
+3,150727,video,30,29
+4,150846,quiet,20,20

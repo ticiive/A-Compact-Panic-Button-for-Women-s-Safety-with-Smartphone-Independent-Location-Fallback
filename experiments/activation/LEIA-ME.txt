@@ -1,0 +1,10 @@
+TESTE DE ACIONAMENTO — ESP32-WROVER
+1. Abra ensaio/ensaio.ino na Arduino IDE. Use a placa ESP32 Wrover Module e a biblioteca ticiive-project-2_inferencing já instalada no Mac. Carregue na placa e feche o Monitor Serial. A gravação substitui temporariamente o firmware em execução. O sketch original permanece no projeto.
+2. No Terminal, entre na pasta que contém teste.py. Use o mesmo Python da ponte pc_bridge.py (pyserial e sounddevice). Feche qualquer ponte em execução. Se necessário: python3 -m pip install pyserial sounddevice
+3. Para experimentar: python3 teste.py --tentativas 2
+4. Para coletar: python3 teste.py --tentativas 20
+5. Para o ensaio negativo: python3 teste.py --negativo
+Se houver mais de uma porta USB, acrescente --porta /dev/cu.usbserial-... com a porta da placa. Use o microfone de entrada selecionado no Mac. Mantenha a janela do terminal visível para os sinais.
+Comparação: um estímulo visual inicia cada janela de 4 s. Faça exatamente uma ação. O CSV registra método solicitado, primeira resposta, eventos extras, ausências e latência desde o sinal. A latência inclui reação humana e transporte USB. Os dois métodos são testados com a ESP32 acordada a 160 MHz. O ensaio termina no evento START e isola o acionamento, sem localização nem envio. Não compara o tempo de wake-up do modo deep sleep. Entre tentativas há 2 s de intervalo.
+Negativo: começa após confirmar que a inferência está avançando. Deixe o microfone ligado, converse sem a palavra-alvo, sem tocar no botão. Dura 30 minutos. A captura processa o áudio sem salvar conversas. O CSV registra eventos e conclusão ou interrupção; só conte a sessão completa. Se o sistema parar de processar, verifique USB e microfone e repita.
+Para voltar à demonstração integrada, carregue o panic_button.ino original com ACTIVATION_MODE 1 e KWS_TEST_MODE 0 e abra a ponte normal.
