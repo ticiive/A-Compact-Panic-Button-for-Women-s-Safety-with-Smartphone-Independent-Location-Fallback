@@ -2,7 +2,7 @@
 
 Projeto de Sistemas Embarcados (IBM3118) de Letícia Valladão e Vinicius Dias, Ibmec, 2026.2. O botão foi pensado para passar a maior parte do tempo guardado, pronto para iniciar um pedido de ajuda. A ESP32 tenta obter coordenadas de um cliente Bluetooth. Se o cliente some, a placa mantém a emergência ativa e passa a pedir a posição ao receptor GNSS.
 
-[Artigo e referências](article/) · [Firmware integrado](firmware/panic_button/panic_button.ino) · [Guia da demonstração](docs/demonstracao.md) · [Dados de bancada](results/) · [Simulação de autonomia](simulation/)
+[Hardware, software e modelo de voz](docs/sistema.md) · [Artigo e referências](article/) · [Firmware integrado](firmware/panic_button/panic_button.ino) · [Guia da demonstração](docs/demonstracao.md) · [Dados de bancada](results/) · [Simulação de autonomia](simulation/)
 
 <img src="docs/figures/prototipo.jpg" width="380" alt="ESP32 na protoboard com botão, buzzer e LEDs de sinalização">
 
